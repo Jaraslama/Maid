@@ -1,44 +1,32 @@
 ﻿using System;
 using System.IO;
-using System.Text;
-using System.Runtime.InteropServices;
-using Microsoft.Toolkit.Uwp.Notifications;
+using System.Windows.Forms;
+using System.Diagnostics;
+using System.ServiceProcess;
 
 class Program
 {
-    [DllImport("shell32.dll", SetLastError = true)]
-    static extern void SetCurrentProcessExplicitAppUserModelID(
-        [MarshalAs(UnmanagedType.LPWStr)] string AppID);
-
     static void Main()
     {
-        SetCurrentProcessExplicitAppUserModelID("MyCleanupApp");
-
         string userTemp = Path.GetTempPath();
         string winLogs = "C:\\Windows\\Logs";
         string winTemp = "C:\\Windows\\Temp";
+        string updateCache = "C:\\Windows\\SoftwareDistribution\\Download";
 
-        StringBuilder summary = new StringBuilder();
+        CleanFolder(userTemp);
+        CleanFolder(winLogs);
+        CleanFolder(winTemp);
+        CleanUpdateCache(updateCache);
 
-        summary.AppendLine(CleanFolder(userTemp));
-        summary.AppendLine(CleanFolder(winLogs));
-        summary.AppendLine(CleanFolder(winTemp));
-
-        ShowToast("Cleanup finished", summary.ToString());
+        MessageBox.Show("Hotovo! Počítač byl uklizen.", "Úklid dokončen");
     }
 
-    static string CleanFolder(string folderPath)
+    static void CleanFolder(string folderPath)
     {
-        if (!Directory.Exists(folderPath))
-        {
-            return $"{folderPath}: folder not found, skipped.";
-        }
+        if (!Directory.Exists(folderPath)) return;
 
         string[] files = Directory.GetFiles(folderPath);
         string[] dirs = Directory.GetDirectories(folderPath);
-
-        int deletedFiles = 0, skippedFiles = 0;
-        int deletedDirs = 0, skippedDirs = 0;
 
         foreach (string file in files)
         {
@@ -52,11 +40,10 @@ class Program
                 }
 
                 File.Delete(file);
-                deletedFiles++;
             }
             catch
             {
-                skippedFiles++;
+                // skip - locked or access denied
             }
         }
 
@@ -65,23 +52,82 @@ class Program
             try
             {
                 Directory.Delete(dir, true);
-                deletedDirs++;
             }
             catch
             {
-                skippedDirs++;
+                // skip - locked or access denied
             }
         }
-
-        return $"{folderPath}: {deletedFiles} files, {deletedDirs} folders deleted " +
-               $"({skippedFiles} files, {skippedDirs} folders skipped).";
     }
 
-    static void ShowToast(string title, string message)
+    static void CleanUpdateCache(string folderPath)
     {
-        new ToastContentBuilder()
-            .AddText(title)
-            .AddText(message)
-            .Show();
+        if (!Directory.Exists(folderPath)) return;
+
+        bool serviceStopped = false;
+
+        try
+        {
+            using (ServiceController wu = new ServiceController("wuauserv"))
+            {
+                if (wu.Status == ServiceControllerStatus.Running)
+                {
+                    wu.Stop();
+                    wu.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(15));
+                    serviceStopped = true;
+                }
+            }
+        }
+        catch
+        {
+            // couldn't stop the service (maybe not admin) - continue anyway
+        }
+
+        TakeOwnership(folderPath);
+        CleanFolder(folderPath);
+
+        if (serviceStopped)
+        {
+            try
+            {
+                using (ServiceController wu = new ServiceController("wuauserv"))
+                {
+                    wu.Start();
+                }
+            }
+            catch
+            {
+                // ignore - user may need to start it manually
+            }
+        }
+    }
+
+    static void TakeOwnership(string folderPath)
+    {
+        RunHidden("takeown.exe", $"/f \"{folderPath}\" /r /d y");
+        RunHidden("icacls.exe", $"\"{folderPath}\" /grant Administrators:F /t /c");
+    }
+
+    static void RunHidden(string fileName, string arguments)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                CreateNoWindow = true,
+                UseShellExecute = false
+            };
+
+            using (var process = Process.Start(psi))
+            {
+                process.WaitForExit();
+            }
+        }
+        catch
+        {
+            // ignore
+        }
     }
 }
