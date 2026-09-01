@@ -18,8 +18,6 @@ Maiden může pro provedení úklidu používat **oprávnění správce**, aby m
 
 Pokud už Maiden nechcete používat, můžete ho jednoduše **odinstalovat v Nastavení Windows**.
 
-Nastavení otevřete tlačítkem níže:
-
-\<a href="ms-settings\:appsfeatures">Odinstalovat Maiden v Nastavení\</a>
+**Nastavení → Aplikace → Nainstalované aplikace → Maiden → Odinstalovat**
 
 > **Důležité:** Maiden trvale odstraňuje soubory. Používejte ho pouze v případě, že rozumíte tomu, že odstraněné soubory nemusí být možné obnovit.
