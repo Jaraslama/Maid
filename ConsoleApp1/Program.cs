@@ -1,29 +1,59 @@
-﻿using System;
+using System;
 using System.IO;
-using System.Windows.Forms;
 using System.Diagnostics;
 using System.ServiceProcess;
+using System.Text.Json;
+using System.Collections.Generic;
 
 class Program
 {
-    static void Main()
+    static string LogFolder = "C:\\ProgramData\\Maiden";
+    static string LogFile = "C:\\ProgramData\\Maiden\\history.json";
+    static string SizesFile = "C:\\ProgramData\\Maiden\\sizes.json";
+
+    static void Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--scan")
+        {
+            ScanFolderSizes();
+            return;
+        }
+
         string userTemp = Path.GetTempPath();
         string winLogs = "C:\\Windows\\Logs";
         string winTemp = "C:\\Windows\\Temp";
         string updateCache = "C:\\Windows\\SoftwareDistribution\\Download";
 
-        CleanFolder(userTemp);
-        CleanFolder(winLogs);
-        CleanFolder(winTemp);
-        CleanUpdateCache(updateCache);
+        long totalBytesFreed = 0;
 
-        MessageBox.Show("Hotovo! Počítač byl uklizen.", "Úklid dokončen");
+        totalBytesFreed += CleanFolder(userTemp);
+        totalBytesFreed += CleanFolder(winLogs);
+        totalBytesFreed += CleanFolder(winTemp);
+        totalBytesFreed += CleanUpdateCache(updateCache);
+
+        LogRun(totalBytesFreed);
     }
 
-    static void CleanFolder(string folderPath)
+    static void ScanFolderSizes()
     {
-        if (!Directory.Exists(folderPath)) return;
+        var sizes = new Dictionary<string, long>
+        {
+            { "UserTemp", GetDirectorySize(Path.GetTempPath()) },
+            { "WinLogs", GetDirectorySize("C:\\Windows\\Logs") },
+            { "WinTemp", GetDirectorySize("C:\\Windows\\Temp") },
+            { "UpdateCache", GetDirectorySize("C:\\Windows\\SoftwareDistribution\\Download") }
+        };
+
+        Directory.CreateDirectory(LogFolder);
+        string json = JsonSerializer.Serialize(sizes, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(SizesFile, json);
+    }
+
+    static long CleanFolder(string folderPath)
+    {
+        if (!Directory.Exists(folderPath)) return 0;
+
+        long bytesFreed = 0;
 
         string[] files = Directory.GetFiles(folderPath);
         string[] dirs = Directory.GetDirectories(folderPath);
@@ -39,7 +69,9 @@ class Program
                     File.SetAttributes(file, attributes & ~FileAttributes.ReadOnly);
                 }
 
+                long size = new FileInfo(file).Length;
                 File.Delete(file);
+                bytesFreed += size;
             }
             catch
             {
@@ -51,18 +83,36 @@ class Program
         {
             try
             {
+                long dirSize = GetDirectorySize(dir);
                 Directory.Delete(dir, true);
+                bytesFreed += dirSize;
             }
             catch
             {
                 // skip - locked or access denied
             }
         }
+
+        return bytesFreed;
     }
 
-    static void CleanUpdateCache(string folderPath)
+    static long GetDirectorySize(string folderPath)
     {
-        if (!Directory.Exists(folderPath)) return;
+        long size = 0;
+        try
+        {
+            foreach (string file in Directory.GetFiles(folderPath, "*", SearchOption.AllDirectories))
+            {
+                try { size += new FileInfo(file).Length; } catch { }
+            }
+        }
+        catch { }
+        return size;
+    }
+
+    static long CleanUpdateCache(string folderPath)
+    {
+        if (!Directory.Exists(folderPath)) return 0;
 
         bool serviceStopped = false;
 
@@ -84,7 +134,7 @@ class Program
         }
 
         TakeOwnership(folderPath);
-        CleanFolder(folderPath);
+        long bytesFreed = CleanFolder(folderPath);
 
         if (serviceStopped)
         {
@@ -100,6 +150,8 @@ class Program
                 // ignore - user may need to start it manually
             }
         }
+
+        return bytesFreed;
     }
 
     static void TakeOwnership(string folderPath)
@@ -130,4 +182,39 @@ class Program
             // ignore
         }
     }
+
+    static void LogRun(long bytesFreed)
+    {
+        try
+        {
+            Directory.CreateDirectory(LogFolder);
+
+            List<CleanupEntry> history = new List<CleanupEntry>();
+
+            if (File.Exists(LogFile))
+            {
+                string existingJson = File.ReadAllText(LogFile);
+                history = JsonSerializer.Deserialize<List<CleanupEntry>>(existingJson) ?? new List<CleanupEntry>();
+            }
+
+            history.Add(new CleanupEntry
+            {
+                Timestamp = DateTime.Now,
+                BytesFreed = bytesFreed
+            });
+
+            string newJson = JsonSerializer.Serialize(history, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(LogFile, newJson);
+        }
+        catch
+        {
+            // if logging fails, don't crash the whole app over it
+        }
+    }
+}
+
+class CleanupEntry
+{
+    public DateTime Timestamp { get; set; }
+    public long BytesFreed { get; set; }
 }

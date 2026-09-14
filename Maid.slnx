@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="ConsoleApp1/Maid.csproj" />
+  <Project Path="MaidenDashboard/MaidenDashboard.csproj" Id="ea6c7c33-94bf-4362-a111-4c5d1f5cf41e" />
 </Solution>
