@@ -84,6 +84,8 @@ namespace MaidenDashboard
 
                 foreach (var pair in sizes)
                 {
+                    if (pair.Key == "UpdateCache") continue;
+
                     string displayName = Localization.Get($"Folder.{pair.Key}");
                     var item = new ListViewItem(displayName);
                     item.SubItems.Add(FormatBytes(pair.Value));
@@ -98,28 +100,25 @@ namespace MaidenDashboard
             }
         }
 
-        private void BtnRefresh_Click(object? sender, EventArgs e)
+        private async void BtnRefresh_Click(object? sender, EventArgs e)
         {
+            btnRefresh.Enabled = false;
             try
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = MaidExePath,
-                    Arguments = "--scan",
-                    UseShellExecute = true,
-                    Verb = "runas"
-                };
-
-                using (var process = Process.Start(psi))
-                {
-                    process?.WaitForExit();
-                }
-
+                await RunElevatedProcessAsync("--scan");
                 LoadFolderSizes();
             }
-            catch (System.ComponentModel.Win32Exception)
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
             {
                 // user clicked "No" on the UAC prompt - ignore
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, Localization.Get("Dialog.Error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                btnRefresh.Enabled = true;
             }
         }
 
@@ -136,45 +135,185 @@ namespace MaidenDashboard
 
         }
 
-        private void Button1_Click(object? sender, EventArgs e)
+        private async void Button1_Click(object? sender, EventArgs e)
         {
+            string progressFile = Path.Combine(Path.GetTempPath(), $"maid-progress-{Guid.NewGuid():N}.json");
+            bool cancelled = false;
+            bool completed = false;
+            cleanupProgressPanel.Visible = true;
+            cleanupProgressBar.Style = ProgressBarStyle.Marquee;
+            cleanupProgressBar.MarqueeAnimationSpeed = 30;
+            SetCleanupProgress(0, "Progress.Starting");
+            SetCleanupRunning(true);
+
             try
             {
-                // Run cleanup
                 var psi = new ProcessStartInfo
                 {
                     FileName = MaidExePath,
                     UseShellExecute = true,
-                    Verb = "runas"  // Run as administrator
-                };
-
-                using (var process = Process.Start(psi))
-                {
-                    process?.WaitForExit();
-                }
-
-                // Scan folder sizes after cleanup
-                var scanPsi = new ProcessStartInfo
-                {
-                    FileName = MaidExePath,
-                    Arguments = "--scan",
-                    UseShellExecute = true,
                     Verb = "runas"
                 };
+                psi.ArgumentList.Add("--progress-file");
+                psi.ArgumentList.Add(progressFile);
 
-                using (var process = Process.Start(scanPsi))
+                using (var process = Process.Start(psi) ?? throw new InvalidOperationException("The cleanup process could not be started."))
                 {
-                    process?.WaitForExit();
+                    Task exitTask = process.WaitForExitAsync();
+                    while (!exitTask.IsCompleted)
+                    {
+                        UpdateCleanupProgress(progressFile);
+                        await Task.WhenAny(exitTask, Task.Delay(200));
+                    }
+
+                    await exitTask;
+                    UpdateCleanupProgress(progressFile);
+                    if (process.ExitCode != 0)
+                    {
+                        string? errorDetails = ReadCleanupError(progressFile);
+                        string message = $"The cleanup process exited with code {process.ExitCode}.";
+                        if (!string.IsNullOrWhiteSpace(errorDetails))
+                        {
+                            message += Environment.NewLine + Environment.NewLine + errorDetails;
+                        }
+
+                        throw new InvalidOperationException(message);
+                    }
                 }
 
-                // Reload both history and folder sizes
+                cleanupProgressBar.Style = ProgressBarStyle.Blocks;
+                cleanupProgressBar.Value = 100;
+                SetCleanupProgress(100, "Progress.Refreshing");
+                await RunElevatedProcessAsync("--scan");
+
                 LoadHistory();
                 LoadFolderSizes();
+                cleanupProgressBar.Style = ProgressBarStyle.Blocks;
+                cleanupProgressBar.Value = 100;
+                SetCleanupProgress(100, "Progress.Completed");
+                completed = true;
             }
-            catch (System.ComponentModel.Win32Exception)
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
             {
-                // User clicked "No" on the UAC prompt - ignore
+                cancelled = true;
             }
+            catch (Exception ex)
+            {
+                SetCleanupProgress(cleanupProgressBar.Value, "Progress.Failed");
+                MessageBox.Show(ex.Message, Localization.Get("Dialog.Error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                try
+                {
+                    File.Delete(progressFile);
+                    File.Delete(progressFile + ".tmp");
+                }
+                catch (IOException ex)
+                {
+                    MessageBox.Show(ex.Message, Localization.Get("Dialog.Error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    MessageBox.Show(ex.Message, Localization.Get("Dialog.Error"), MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+
+                if (cancelled)
+                {
+                    cleanupProgressPanel.Visible = false;
+                }
+                else if (!completed && cleanupProgressBar.Value == 100)
+                {
+                    SetCleanupProgress(99, "Progress.Failed");
+                }
+
+                SetCleanupRunning(false);
+            }
+        }
+
+        private async Task RunElevatedProcessAsync(string arguments)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = MaidExePath,
+                Arguments = arguments,
+                UseShellExecute = true,
+                Verb = "runas"
+            };
+
+            using (var process = Process.Start(psi) ?? throw new InvalidOperationException("The Maid process could not be started."))
+            {
+                await process.WaitForExitAsync();
+                if (process.ExitCode != 0)
+                {
+                    throw new InvalidOperationException($"The Maid process exited with code {process.ExitCode}.");
+                }
+            }
+        }
+
+        private void UpdateCleanupProgress(string progressFile)
+        {
+            if (!File.Exists(progressFile)) return;
+
+            try
+            {
+                using var stream = new FileStream(progressFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var document = JsonDocument.Parse(stream);
+                int percent = Math.Clamp(document.RootElement.GetProperty("Percent").GetInt32(), 0, 100);
+                string status = document.RootElement.GetProperty("Status").GetString() ?? "Progress.Starting";
+                cleanupProgressBar.Style = ProgressBarStyle.Blocks;
+                SetCleanupProgress(percent, status);
+            }
+            catch (IOException)
+            {
+                ShowProgressUnavailable();
+            }
+            catch (UnauthorizedAccessException)
+            {
+                ShowProgressUnavailable();
+            }
+            catch (JsonException)
+            {
+                ShowProgressUnavailable();
+            }
+        }
+
+        private static string? ReadCleanupError(string progressFile)
+        {
+            if (!File.Exists(progressFile)) return null;
+
+            using var stream = new FileStream(progressFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var document = JsonDocument.Parse(stream);
+            return document.RootElement.TryGetProperty("Error", out JsonElement error)
+                ? error.GetString()
+                : null;
+        }
+
+        private void SetCleanupProgress(int percent, string status)
+        {
+            if (cleanupProgressBar.Style == ProgressBarStyle.Blocks)
+            {
+                cleanupProgressBar.Value = Math.Clamp(percent, cleanupProgressBar.Minimum, cleanupProgressBar.Maximum);
+                lblCleanupProgress.Text = $"{cleanupProgressBar.Value}% - {Localization.Get(status)}";
+            }
+            else
+            {
+                lblCleanupProgress.Text = Localization.Get("Progress.Running");
+            }
+        }
+
+        private void ShowProgressUnavailable()
+        {
+            cleanupProgressBar.Style = ProgressBarStyle.Marquee;
+            lblCleanupProgress.Text = Localization.Get("Progress.Running");
+        }
+
+        private void SetCleanupRunning(bool running)
+        {
+            btnRefresh.Enabled = !running;
+            button1.Enabled = !running;
+            btnClearHistory.Enabled = !running;
+            menuStrip.Enabled = !running;
         }
 
         private void lblLastRun_Click(object sender, EventArgs e)
@@ -266,7 +405,7 @@ namespace MaidenDashboard
                         string latestVersion = latestRelease.GetProperty("tag_name").GetString() ?? "Unknown";
                         string downloadUrl = latestRelease.GetProperty("html_url").GetString() ?? "";
 
-                        string currentVersion = "v1.2.0"; // Change this to your actual version
+                        string currentVersion = "v1.3.0"; // Change this to your actual version
 
                         if (latestVersion != currentVersion)
                         {

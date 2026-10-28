@@ -50,12 +50,24 @@ namespace MaidenDashboard
             "Folder.UserTemp" => "Dočasné soubory uživatele",
             "Folder.WinLogs" => "Protokoly Windows",
             "Folder.WinTemp" => "Dočasné soubory systému",
-            "Folder.UpdateCache" => "Mezipaměť aktualizací",
 
             // Status Messages
             "Status.NoScanYet" => "(ještě nebyla spuštěna kontrola)",
             "Status.ErrorReading" => "(chyba při čtení dat)",
             "Status.LastRunError" => "Poslední čištění: (chyba při čtení)",
+
+            // Cleanup Progress
+            "Progress.Starting" => "Spouštění čištění...",
+            "Progress.UserTemp" => "Čištění dočasných souborů uživatele...",
+            "Progress.WinLogs" => "Čištění protokolů Windows...",
+            "Progress.WinTemp" => "Čištění dočasných souborů systému...",
+            "Progress.Scanning" => "Prohledávání složek...",
+            "Progress.CleaningItems" => "Odstraňování souborů...",
+            "Progress.SavingHistory" => "Ukládání historie...",
+            "Progress.Completed" => "Čištění dokončeno.",
+            "Progress.Refreshing" => "Obnovování velikostí složek...",
+            "Progress.Failed" => "Čištění se nezdařilo.",
+            "Progress.Running" => "Čištění probíhá...",
 
             // Dialog Messages
             "Dialog.ConfirmClearHistory" => "Opravdu chcete vymazat historii čištění?\n\nTuto akci nelze vrátit.",
@@ -118,12 +130,24 @@ namespace MaidenDashboard
             "Folder.UserTemp" => "User Temporary Files",
             "Folder.WinLogs" => "Windows Logs",
             "Folder.WinTemp" => "Windows Temporary Files",
-            "Folder.UpdateCache" => "Windows Update Cache",
 
             // Status Messages
             "Status.NoScanYet" => "(no scan yet)",
             "Status.ErrorReading" => "(error reading data)",
             "Status.LastRunError" => "Last cleanup: (error reading)",
+
+            // Cleanup Progress
+            "Progress.Starting" => "Starting cleanup...",
+            "Progress.UserTemp" => "Cleaning user temporary files...",
+            "Progress.WinLogs" => "Cleaning Windows logs...",
+            "Progress.WinTemp" => "Cleaning Windows temporary files...",
+            "Progress.Scanning" => "Scanning folders...",
+            "Progress.CleaningItems" => "Removing files...",
+            "Progress.SavingHistory" => "Saving cleanup history...",
+            "Progress.Completed" => "Cleanup complete.",
+            "Progress.Refreshing" => "Refreshing folder sizes...",
+            "Progress.Failed" => "Cleanup failed.",
+            "Progress.Running" => "Cleanup is running...",
 
             // Dialog Messages
             "Dialog.ConfirmClearHistory" => "Are you sure you want to delete the cleanup history?\n\nThis action cannot be undone.",

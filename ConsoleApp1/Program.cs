@@ -1,7 +1,5 @@
 using System;
 using System.IO;
-using System.Diagnostics;
-using System.ServiceProcess;
 using System.Text.Json;
 using System.Collections.Generic;
 
@@ -11,27 +9,43 @@ class Program
     static string LogFile = "C:\\ProgramData\\Maiden\\history.json";
     static string SizesFile = "C:\\ProgramData\\Maiden\\sizes.json";
 
-    static void Main(string[] args)
+    static int Main(string[] args)
     {
-        if (args.Length > 0 && args[0] == "--scan")
+        ProgressReporter? progress = null;
+        try
         {
-            ScanFolderSizes();
-            return;
+            if (args.Length > 0 && args[0] == "--scan")
+            {
+                ScanFolderSizes();
+                return 0;
+            }
+
+            if (args.Length == 2 && args[0] == "--progress-file")
+            {
+                progress = new ProgressReporter(args[1]);
+                progress.Report(0, "Progress.Starting");
+            }
+
+            string userTemp = Path.GetTempPath();
+            string winLogs = "C:\\Windows\\Logs";
+            string winTemp = "C:\\Windows\\Temp";
+
+            long totalBytesFreed = 0;
+
+            totalBytesFreed += CleanFolder(userTemp, progress, 0, 30, "Progress.UserTemp");
+            totalBytesFreed += CleanFolder(winLogs, progress, 30, 60, "Progress.WinLogs");
+            totalBytesFreed += CleanFolder(winTemp, progress, 60, 96, "Progress.WinTemp");
+
+            progress?.Report(98, "Progress.SavingHistory");
+            LogRun(totalBytesFreed);
+            progress?.Report(100, "Progress.Completed");
+            return 0;
         }
-
-        string userTemp = Path.GetTempPath();
-        string winLogs = "C:\\Windows\\Logs";
-        string winTemp = "C:\\Windows\\Temp";
-        string updateCache = "C:\\Windows\\SoftwareDistribution\\Download";
-
-        long totalBytesFreed = 0;
-
-        totalBytesFreed += CleanFolder(userTemp);
-        totalBytesFreed += CleanFolder(winLogs);
-        totalBytesFreed += CleanFolder(winTemp);
-        totalBytesFreed += CleanUpdateCache(updateCache);
-
-        LogRun(totalBytesFreed);
+        catch (Exception ex)
+        {
+            progress?.ReportFailure(ex);
+            return 1;
+        }
     }
 
     static void ScanFolderSizes()
@@ -40,8 +54,7 @@ class Program
         {
             { "UserTemp", GetDirectorySize(Path.GetTempPath()) },
             { "WinLogs", GetDirectorySize("C:\\Windows\\Logs") },
-            { "WinTemp", GetDirectorySize("C:\\Windows\\Temp") },
-            { "UpdateCache", GetDirectorySize("C:\\Windows\\SoftwareDistribution\\Download") }
+            { "WinTemp", GetDirectorySize("C:\\Windows\\Temp") }
         };
 
         Directory.CreateDirectory(LogFolder);
@@ -49,15 +62,47 @@ class Program
         File.WriteAllText(SizesFile, json);
     }
 
-    static long CleanFolder(string folderPath)
+    static long CleanFolder(string folderPath, ProgressReporter? progress, int startPercent, int endPercent, string stage)
     {
-        if (!Directory.Exists(folderPath)) return 0;
+        progress?.Report(startPercent, stage);
+        if (!Directory.Exists(folderPath))
+        {
+            progress?.Report(endPercent, "Progress.CleaningItems");
+            return 0;
+        }
 
         long bytesFreed = 0;
+        var files = new List<string>();
+        var dirs = new List<string>();
+        var pendingDirectories = new Stack<string>();
+        pendingDirectories.Push(folderPath);
+        int scannedDirectories = 0;
 
-        string[] files = Directory.GetFiles(folderPath);
-        string[] dirs = Directory.GetDirectories(folderPath);
+        while (pendingDirectories.Count > 0)
+        {
+            string directory = pendingDirectories.Pop();
+            scannedDirectories++;
+            progress?.Report(Math.Min(startPercent + 8, startPercent + scannedDirectories), "Progress.Scanning");
 
+            try
+            {
+                files.AddRange(Directory.GetFiles(directory));
+                string[] childDirectories = Directory.GetDirectories(directory);
+                dirs.AddRange(childDirectories);
+
+                foreach (string childDirectory in childDirectories)
+                {
+                    pendingDirectories.Push(childDirectory);
+                }
+            }
+            catch
+            {
+                // Skip folders that are locked or inaccessible.
+            }
+        }
+
+        int totalItems = files.Count + dirs.Count;
+        int completedItems = 0;
         foreach (string file in files)
         {
             try
@@ -77,23 +122,37 @@ class Program
             {
                 // skip - locked or access denied
             }
+
+            completedItems++;
+            progress?.Report(GetCleanupPercent(startPercent, endPercent, completedItems, totalItems), "Progress.CleaningItems");
         }
 
-        foreach (string dir in dirs)
+        for (int i = dirs.Count - 1; i >= 0; i--)
         {
+            string dir = dirs[i];
             try
             {
-                long dirSize = GetDirectorySize(dir);
-                Directory.Delete(dir, true);
-                bytesFreed += dirSize;
+                Directory.Delete(dir);
             }
             catch
             {
                 // skip - locked or access denied
             }
+
+            completedItems++;
+            progress?.Report(GetCleanupPercent(startPercent, endPercent, completedItems, totalItems), "Progress.CleaningItems");
         }
 
+        progress?.Report(endPercent, "Progress.CleaningItems");
         return bytesFreed;
+    }
+
+    static int GetCleanupPercent(int startPercent, int endPercent, int completedItems, int totalItems)
+    {
+        int deletionStart = Math.Min(startPercent + 8, endPercent);
+        if (totalItems == 0) return endPercent;
+
+        return deletionStart + (int)((endPercent - deletionStart) * (completedItems / (double)totalItems));
     }
 
     static long GetDirectorySize(string folderPath)
@@ -108,79 +167,6 @@ class Program
         }
         catch { }
         return size;
-    }
-
-    static long CleanUpdateCache(string folderPath)
-    {
-        if (!Directory.Exists(folderPath)) return 0;
-
-        bool serviceStopped = false;
-
-        try
-        {
-            using (ServiceController wu = new ServiceController("wuauserv"))
-            {
-                if (wu.Status == ServiceControllerStatus.Running)
-                {
-                    wu.Stop();
-                    wu.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(15));
-                    serviceStopped = true;
-                }
-            }
-        }
-        catch
-        {
-            // couldn't stop the service (maybe not admin) - continue anyway
-        }
-
-        TakeOwnership(folderPath);
-        long bytesFreed = CleanFolder(folderPath);
-
-        if (serviceStopped)
-        {
-            try
-            {
-                using (ServiceController wu = new ServiceController("wuauserv"))
-                {
-                    wu.Start();
-                }
-            }
-            catch
-            {
-                // ignore - user may need to start it manually
-            }
-        }
-
-        return bytesFreed;
-    }
-
-    static void TakeOwnership(string folderPath)
-    {
-        RunHidden("takeown.exe", $"/f \"{folderPath}\" /r /d y");
-        RunHidden("icacls.exe", $"\"{folderPath}\" /grant Administrators:F /t /c");
-    }
-
-    static void RunHidden(string fileName, string arguments)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = arguments,
-                CreateNoWindow = true,
-                UseShellExecute = false
-            };
-
-            using (var process = Process.Start(psi))
-            {
-                process.WaitForExit();
-            }
-        }
-        catch
-        {
-            // ignore
-        }
     }
 
     static void LogRun(long bytesFreed)
@@ -210,6 +196,67 @@ class Program
         {
             // if logging fails, don't crash the whole app over it
         }
+    }
+
+    class ProgressReporter
+    {
+        private readonly string _filePath;
+        private int _lastPercent = -1;
+        private string? _lastStatus;
+        private bool _enabled = true;
+
+        public ProgressReporter(string filePath)
+        {
+            _filePath = filePath;
+        }
+
+        public void Report(int percent, string status)
+        {
+            if (!_enabled || (percent == _lastPercent && status == _lastStatus)) return;
+
+            if (!TryWriteEntry(new ProgressEntry { Percent = percent, Status = status })) return;
+            _lastPercent = percent;
+            _lastStatus = status;
+        }
+
+        public void ReportFailure(Exception exception)
+        {
+            TryWriteEntry(new ProgressEntry
+            {
+                Percent = _lastPercent < 0 ? 0 : _lastPercent,
+                Status = "Progress.Failed",
+                Error = exception.ToString()
+            });
+        }
+
+        private bool TryWriteEntry(ProgressEntry entry)
+        {
+            if (!_enabled) return false;
+
+            try
+            {
+                string json = JsonSerializer.Serialize(entry);
+                File.WriteAllText(_filePath, json);
+                return true;
+            }
+            catch (IOException)
+            {
+                _enabled = false;
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                _enabled = false;
+                return false;
+            }
+        }
+    }
+
+    class ProgressEntry
+    {
+        public int Percent { get; set; }
+        public string Status { get; set; } = "";
+        public string? Error { get; set; }
     }
 }
 
