@@ -13,6 +13,7 @@ Soubory a složky, které jsou uzamčené nebo je používá jiný program, se a
 ## Požadavky
 
 - Windows 10/11
+- .Net 10
 
 ## Stažení
 
